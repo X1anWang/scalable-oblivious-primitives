@@ -59,8 +59,14 @@ exit_free_rand:
 
 int ecall_sort_alloc_arr(size_t total_length_, enum sort_type sort_type,
         size_t join_length_) {
-    total_length = total_length_;
-    join_length = join_length_;
+    total_length = 1 << total_length_;
+    join_length = 1 << join_length_;
+    
+    if (sort_type == SOJOIN) {
+        ret = 0;
+        goto exit;
+    }
+    
     size_t local_length =
         ((world_rank + 1) * total_length + world_size - 1) / world_size
             - (world_rank * total_length + world_size - 1) / world_size;
@@ -155,6 +161,11 @@ int ecall_verify_sorted(void) {
     uint64_t first_key = 0;
     uint64_t prev_key = 0;
     int ret;
+
+    if (sort_type == SOJOIN) {
+        ret = 0;
+        goto exit;
+    }
 
     for (int rank = 0; rank < world_size; rank++) {
         if (rank == world_rank) {
@@ -288,6 +299,20 @@ void ecall_start_work(void) {
             ojoin_free();
             break;
 
+        case SOJOIN:
+            /* Initialize o-join. */
+            if (sojoin_init()) {
+                handle_error_string("Error initializing ojoin");
+                return;
+            }
+
+            /* Start work. */
+            thread_start_work();
+
+            /* Free sort. */
+            sojoin_free();
+            break;
+
         case SORT_UNSET:
             handle_error_string("Invalid sort type");
             goto exit;
@@ -390,6 +415,31 @@ int ecall_ojoin(void) {
 
     /* Sort. */
     ret = ojoin(arr, total_length, join_length, total_num_threads);
+    if (ret) {
+        handle_error_string("Error in ORShuffle sort");
+        goto exit_free_sort;
+    }
+
+exit_free_sort:
+    orshuffle_free();
+exit:
+    return ret;
+}
+
+int ecall_sojoin(void) {
+    int ret;
+
+    sort_type = SOJOIN;
+
+    /* Initialize sort. */
+    ret = sojoin_init();
+    if (ret) {
+        handle_error_string("Error initializing sort");
+        goto exit;
+    }
+    
+    /* Sort. */
+    ret = sojoin(arr, total_length, join_length, total_num_threads);
     if (ret) {
         handle_error_string("Error in ORShuffle sort");
         goto exit_free_sort;
