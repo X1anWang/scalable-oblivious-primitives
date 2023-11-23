@@ -22,9 +22,11 @@ static void usage(char **argv) {
 #ifndef DISTRIBUTED_SGX_SORT_HOSTONLY
         printf("Usage: %s <enclave image> {bitonic|bucket|orshuffle} <array size> <num threads> [num runs]\n", argv[0]);
         printf("Usage: %s <enclave image> join <array size> <join size> <num threads> [num runs]\n", argv[0]);
-#else /* DISTRIBUTED_SGX_SORT_HOSTONLY */
+        printf("Usage: %s <enclave image> sojoin <min array size> <max array size> <num threads> [num runs]\n", argv[0]);
+        #else /* DISTRIBUTED_SGX_SORT_HOSTONLY */
         printf("Usage: %s {bitonic|bucket|orshuffle} <array size> <num threads> [num runs]\n", argv[0]);
         printf("Usage: %s join <array size> <join size> <num threads> [num runs]\n", argv[0]);
+        printf("Usage: %s sojoin <min array size> <max array size> <num threads> [num runs]\n", argv[0]);
 #endif /* DISTRIBUTED_SGX_SORT_HOSTONLY */
 }
 
@@ -75,23 +77,23 @@ static void *start_thread_work(void *enclave_) {
 
 #ifndef DISTRIBUTED_SGX_SORT_HOSTONLY
 int time_sort(oe_enclave_t *enclave, enum sort_type sort_type, size_t length,
-        size_t join_length) {
+        size_t length2) {
     oe_result_t result;
 #else
-int time_sort(enum sort_type sort_type, size_t length, size_t join_length) {
+int time_sort(enum sort_type sort_type, size_t length, size_t length2) {
 #endif
     int ret;
 
     /* Init random array. */
 #ifndef DISTRIBUTED_SGX_SORT_HOSTONLY
     result =
-        ecall_sort_alloc_arr(enclave, &ret, length, sort_type, join_length);
+        ecall_sort_alloc_arr(enclave, &ret, length, sort_type, length2);
     if (result != OE_OK) {
         handle_oe_error(result, "ecall_sort_alloc");
         goto exit;
     }
 #else /* DISTRIBUTED_SGX_SORT_HOSTONLY */
-    ret = ecall_sort_alloc_arr(length, sort_type, join_length);
+    ret = ecall_sort_alloc_arr(length, sort_type, length2);
 #endif /* DISTRIBUTED_SGX_SORT_HOSTONLY */
     if (ret) {
         handle_error_string("Error allocating array in enclave");
@@ -121,6 +123,8 @@ int time_sort(enum sort_type sort_type, size_t length, size_t join_length) {
         case OJOIN:
             result = ecall_ojoin(enclave, &ret);
             break;
+        case SOJOIN:
+            result = ecall_sojoin(enclave, &ret);
         case SORT_UNSET:
             handle_error_string("Invalid sort type");
             ret = -1;
@@ -142,6 +146,9 @@ int time_sort(enum sort_type sort_type, size_t length, size_t join_length) {
             break;
         case OJOIN:
             ret = ecall_ojoin();
+            break;
+        case SOJOIN:
+            ret = ecall_sojoin();
             break;
         case SORT_UNSET:
             handle_error_string("Invalid sort type");
@@ -170,7 +177,7 @@ int time_sort(enum sort_type sort_type, size_t length, size_t join_length) {
             (double) ((end.tv_sec * 1000000000 + end.tv_nsec)
                     - (start.tv_sec * 1000000000 + start.tv_nsec))
             / 1000000000;
-        printf("%f\n", seconds_taken);
+        printf("Total time (allocation time included): %f\n", seconds_taken);
     }
 
     /* Print stats. */
@@ -245,7 +252,10 @@ int main(int argc, char **argv) {
         sort_type = SORT_ORSHUFFLE;
     } else if (strcmp(argv[argi], "join") == 0) {
         sort_type = OJOIN;
-    } else {
+    } else if (strcmp(argv[argi], "sojoin") == 0) {
+        sort_type = SOJOIN
+    }
+    else {
         printf("Invalid sort type\n");
         return ret;
     }
@@ -259,7 +269,7 @@ int main(int argc, char **argv) {
     }
     argi++;
 
-    size_t join_length = 0;
+    size_t length2 = 0;
     if (sort_type == OJOIN) {
         if (argc + 1 <= argi + 1) {
             usage(argv);
@@ -267,14 +277,33 @@ int main(int argc, char **argv) {
         }
 
         errno = 0;
-        join_length = strtoll(argv[argi], NULL, 10);
+        length2 = strtoll(argv[argi], NULL, 10);
         if (errno) {
             printf("Invalid join length\n");
             return ret;
         }
 
-        if (join_length > length) {
+        if (length2 > length) {
             printf("Join length must be less than or equal to array length\n");
+            return ret;
+        }
+
+        argi++;
+    } else if (sort_type == SOJOIN) {
+        if (argc + 1 <= argi + 1) {
+            usage(argv);
+            return 0;
+        }
+
+        errno = 0;
+        length2 = strtoll(argv[argi], NULL, 10);
+        if (errno) {
+            printf("Invalid max array length\n");
+            return ret;
+        }
+
+        if (length2 < length) {
+            printf("Join length must be larger than or equal to min array length\n");
             return ret;
         }
 
@@ -327,12 +356,6 @@ int main(int argc, char **argv) {
             argv[1],
             OE_ENCLAVE_TYPE_AUTO,
             0
-#ifdef OE_DEBUG
-                | OE_ENCLAVE_FLAG_DEBUG
-#endif
-#ifdef OE_SIMULATION
-                | OE_ENCLAVE_FLAG_SIMULATE
-#endif
             ,
             NULL,
             0,
@@ -376,9 +399,9 @@ int main(int argc, char **argv) {
 
     for (size_t i = 0; i < num_runs; i++) {
 #ifndef DISTRIBUTED_SGX_SORT_HOSTONLY
-        ret = time_sort(enclave, sort_type, length, join_length);
+        ret = time_sort(enclave, sort_type, length, length2);
 #else
-        ret = time_sort(sort_type, length, join_length);
+        ret = time_sort(sort_type, length, length2);
 #endif
         if (ret) {
             handle_error_string("Error in sort");
